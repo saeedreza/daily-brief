@@ -96,7 +96,7 @@ async function fetchTopicArticles(
  * @returns NextResponse containing either articles or error message
  */
 export async function GET(request: Request) {
-  // Check if the required API key is configured
+  // Verify API key first
   if (!process.env.NEWS_API_KEY) {
     return NextResponse.json({ error: "NEWS_API_KEY is not configured" }, { status: 500 })
   }
@@ -108,10 +108,19 @@ export async function GET(request: Request) {
     const useCustomSources = searchParams.get("useCustomSources") === "true"
     const customSources = searchParams.get("customSources")?.split(",") || []
 
-    // Determine which sources to use
+    // Add error handling for sources
     const sources = useCustomSources
       ? customSources
       : POLITICAL_SOURCES[politicalView as keyof typeof POLITICAL_SOURCES]
+
+    // Add validation for sources
+    if (!sources || sources.length === 0) {
+      return NextResponse.json({ error: "No valid news sources configured" }, { status: 400 })
+    }
+
+    console.log("API Key configured:", !!process.env.NEWS_API_KEY)
+    console.log("Political View:", politicalView)
+    console.log("Sources available:", !!sources)
 
     let allArticles: NewsArticle[] = []
 
