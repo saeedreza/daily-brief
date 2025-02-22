@@ -1,12 +1,14 @@
 import { NextResponse } from "next/server"
-import { generateText } from "ai"
-import { openai } from "@ai-sdk/openai"
+import OpenAI from "openai"
 
-// Set maximum execution time for this serverless function to 30 seconds
-export const maxDuration = 30
+// Reduce max duration to 25 seconds to allow for proper timeout handling
+export const maxDuration = 25
+
+const openai = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY,
+})
 
 export async function POST(req: Request) {
-  // Verify OpenAI API key is configured in environment variables
   if (!process.env.OPENAI_API_KEY) {
     return NextResponse.json({ error: "OpenAI API key is not configured" }, { status: 500 })
   }
@@ -14,99 +16,70 @@ export async function POST(req: Request) {
   try {
     const { articles, preferences } = await req.json()
 
-    // Group articles by topic
-    const articlesByTopic = articles.reduce((acc: any, article: any) => {
-      const topic = article.topic || "general"
-      if (!acc[topic]) acc[topic] = []
-      acc[topic].push(article)
-      return acc
-    }, {})
+    // Simplify the article formatting to reduce prompt size
+    const formattedArticles = articles.map((article: any) => ({
+      title: article.title,
+      description: article.description?.slice(0, 150), // Limit description length
+      url: article.url,
+      topic: article.topic || 'general'
+    }))
 
-    // Construct a more structured prompt
-    const prompt = `
-      You are a professional news curator and summarizer. Create a comprehensive news brief with these parameters:
-      - Writing style: ${preferences.tone || "casual"}
-      - Language: ${preferences.language || "english"}
-      - Length: A ${preferences.readingTime || "5"} minute read
-
-      Here are the news articles by topic:
-      ${(Object.entries(articlesByTopic) as [string, { title: string; description: string; url: string; source: { name: string } }[]][])
-        .map(([topic, topicArticles]) => `
-          ${topic.toUpperCase()}:
-          ${topicArticles
-            .map((article, index: number) =>
-              `${index + 1}. ${article.title}\n${article.description}\nSource: ${article.source.name} (${article.url})`
-            )
-            .join("\n\n")
-          }
-        `)
-        .join("\n\n---\n\n")}
+    const prompt = `Summarize these news articles in a ${preferences.tone || "casual"} tone, 
+      targeting a ${preferences.readingTime || "5"} minute read in ${preferences.language || "english"}:
+      ${JSON.stringify(formattedArticles, null, 2)}
       
-      Guidelines:
-      - Format the output in HTML with proper markup
-      - Each topic should be in a <section> tag with an <h2> header
-      - Wrap paragraphs in <p> tags
-      - Use <hr> tags between sections
-      - Select and highlight the most important stories from each topic
-      - Maintain the specified tone throughout
-      - Connect related stories across topics where appropriate
-      - Prioritize the most impactful and recent developments
-      - Include source links directly in the text using <a> tags
+      Format in HTML with:
+      - <section> tags for each topic
+      - <h2> headers
+      - <p> tags for paragraphs
+      - Source links as <a> tags
+      `
 
-      Format the output like this:
-      <section class="mb-8">
-        <h2 class="text-2xl font-bold mb-4 text-primary">TOPIC NAME</h2>
-        <p class="text-base leading-relaxed mb-4">Example sentence with a source <a href="https://reuters.com/article1" target="_blank" class="text-blue-600 hover:underline">[1]</a> and another source<a href="https://cnn.com/article2" target="_blank" class="text-blue-600 hover:underline">[2]</a>.</p>
-      </section>
-      <hr class="my-6 border-t border-gray-200 dark:border-gray-700">
-      <section class="mb-8">
-        <h2 class="text-2xl font-bold mb-4 text-primary">ANOTHER TOPIC</h2>
-        <p class="text-base leading-relaxed mb-4">More news content with additional sources.</p>
-      </section>
-    `
+    // Add timeout to OpenAI call
+    const controller = new AbortController()
+    const timeoutId = setTimeout(() => controller.abort(), 20000) // 20 second timeout
 
-    // Generate summary using OpenAI GPT-4
-    console.log("Generating text with OpenAI...")
-    const { text } = await generateText({
-      model: openai("gpt-4"),
-      prompt,
-      temperature: 0.7, // Controls randomness in the output (0.7 provides a good balance)
-      maxTokens: 1000, // Limit response length
+    const completion = await openai.chat.completions.create({
+      model: "gpt-4",
+      messages: [{ role: "user", content: prompt }],
+      temperature: 0.7,
+      max_tokens: 1000,
     })
 
-    if (!text) {
-      throw new Error("No summary was generated")
+    clearTimeout(timeoutId)
+
+    if (!completion.choices[0]?.message?.content) {
+      throw new Error("No summary generated")
     }
 
-    return NextResponse.json({ summary: text })
+    return NextResponse.json({ 
+      summary: completion.choices[0].message.content 
+    })
+
   } catch (error: any) {
-    // Log detailed error information for debugging
     console.error("Summary Generation Error:", {
       name: error.name,
       message: error.message,
       stack: error.stack,
     })
 
-    // Handle specific error types with appropriate error messages
-    if (error.name === "AI_LoadAPIKeyError") {
-      return NextResponse.json({ error: "OpenAI API key is invalid or not properly configured" }, { status: 500 })
+    // Handle specific error cases
+    if (error.name === 'AbortError') {
+      return NextResponse.json({ 
+        error: "Request timed out while generating summary" 
+      }, { status: 504 })
     }
 
-    if (error.name === "AI_RequestError") {
-      return NextResponse.json({ error: "Failed to communicate with OpenAI API" }, { status: 500 })
+    if (error.code === 'ECONNABORTED') {
+      return NextResponse.json({ 
+        error: "Connection aborted while generating summary" 
+      }, { status: 504 })
     }
 
-    // Generic error handler with detailed error information
-    return NextResponse.json(
-      {
-        error: "Failed to generate summary: " + (error.message || "Unknown error"),
-        details: {
-          name: error.name,
-          message: error.message,
-        },
-      },
-      { status: 500 },
-    )
+    return NextResponse.json({
+      error: "Failed to generate summary",
+      details: error.message
+    }, { status: 500 })
   }
 }
 
