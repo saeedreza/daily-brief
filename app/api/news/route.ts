@@ -12,6 +12,12 @@ interface NewsArticle {
   topic?: string
 }
 
+interface MediaStackError {
+  code?: string;
+  message: string;
+  context?: Record<string, string[]>;
+}
+
 /**
  * Fetches articles from MediaStack API
  */
@@ -24,29 +30,57 @@ async function fetchMediaStackArticles(
   // Add required parameters
   params.append("access_key", apiKey)
   params.append("languages", "en")
-  params.append("countries", "us") // Add US news focus
+  params.append("countries", "us")
   params.append("limit", "100")
   params.append("sort", "published_desc")
 
   const url = `${baseUrl}?${params.toString()}`
-  console.log("Fetching from URL:", url) // Debug log
+  console.log("Fetching from URL:", url)
 
   try {
-    const response = await fetch(url)
+    const response = await fetch(url, {
+      method: 'GET',
+      headers: {
+        'Accept': 'application/json',
+      },
+    })
+
+    // Log the full response for debugging
+    console.log("MediaStack Response Status:", response.status)
+    console.log("MediaStack Response Headers:", Object.fromEntries(response.headers))
+
     const data = await response.json()
 
-    console.log("MediaStack Response:", {
-      status: response.status,
-      pagination: data.pagination,
-      totalResults: data.data?.length,
+    // Log the actual response data structure
+    console.log("MediaStack Response Data Structure:", {
+      hasError: !!data.error,
+      hasData: !!data.data,
+      dataLength: data.data?.length,
+      errorDetails: data.error,
     })
 
     if (data.error) {
-      throw new Error(
-        typeof data.error === 'string' 
-          ? data.error 
-          : data.error.message || "MediaStack API Error"
-      )
+      const error: MediaStackError = typeof data.error === 'string' 
+        ? { message: data.error }
+        : data.error
+
+      // Handle specific error cases
+      switch(error.code) {
+        case 'invalid_access_key':
+        case 'missing_access_key':
+          throw new Error('Invalid or missing API key')
+        case 'usage_limit_reached':
+          throw new Error('API usage limit reached')
+        case 'rate_limit_reached':
+          throw new Error('API rate limit reached')
+        default:
+          throw new Error(error.message || "MediaStack API Error")
+      }
+    }
+
+    if (!Array.isArray(data.data)) {
+      console.error("Unexpected data structure:", data)
+      throw new Error("Invalid response format from MediaStack API")
     }
 
     return data.data || []
@@ -60,13 +94,24 @@ async function fetchMediaStackArticles(
  * GET endpoint to fetch news from MediaStack API
  */
 export async function GET(request: Request) {
+  // Add CORS headers
+  const headers = {
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Methods': 'GET, OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+  }
+
+  // Handle OPTIONS request for CORS preflight
+  if (request.method === 'OPTIONS') {
+    return new NextResponse(null, { headers })
+  }
+
   try {
     const { searchParams } = new URL(request.url)
     const topics = searchParams.get('topics')?.split(',') || ['general']
     
     console.log('Requested topics:', topics)
     
-    // Use MediaStack API key from .env
     const MEDIASTACK_API_KEY = process.env.MEDIASTACK_API_KEY
 
     if (!MEDIASTACK_API_KEY) {
@@ -76,7 +121,7 @@ export async function GET(request: Request) {
     // Initialize params for MediaStack API
     const params = new URLSearchParams()
     params.append('categories', topics[0])
-    params.append('limit', '5') // Limit to 5 articles
+    params.append('limit', '5')
     
     const articles = await fetchMediaStackArticles(params, MEDIASTACK_API_KEY)
 
@@ -94,7 +139,7 @@ export async function GET(request: Request) {
       )
     }
 
-    return NextResponse.json({ articles: trimmedArticles })
+    return NextResponse.json({ articles: trimmedArticles }, { headers })
 
   } catch (error: unknown) {
     console.error('Detailed API Error:', {
@@ -102,9 +147,21 @@ export async function GET(request: Request) {
       stack: error instanceof Error ? error.stack : undefined,
       topics: new URL(request.url).searchParams.get('topics')
     })
+
+    // Map common error messages to appropriate HTTP status codes
+    let status = 500
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error'
+    
+    if (errorMessage.includes('Invalid or missing API key')) {
+      status = 401
+    } else if (errorMessage.includes('API usage limit reached') || 
+               errorMessage.includes('API rate limit reached')) {
+      status = 429
+    }
+
     return NextResponse.json(
-      { error: 'Failed to fetch news', details: error instanceof Error ? error.message : 'Unknown error' },
-      { status: 500 }
+      { error: 'Failed to fetch news', details: errorMessage },
+      { status, headers }
     )
   }
 }
