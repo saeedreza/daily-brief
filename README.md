@@ -1,6 +1,6 @@
-# AI News Brief
+# Daily Brief
 
-A web application that provides AI-powered news summaries and briefings.
+Daily dose of news, generated for you.
 
 ## Features
 
@@ -25,13 +25,13 @@ git clone https://github.com/saeedreza/daily-brief.git
 cd daily-brief
 ```
 
-2. Install dependencies:
+1. Install dependencies:
 
 ```bash
 npm install
 ```
 
-3. Start the development server:
+1. Start the development server:
 
 ```bash
 npm run dev
@@ -45,8 +45,7 @@ Open [http://localhost:3000](http://localhost:3000) in your browser to see the a
 - TypeScript
 - Tailwind CSS
 - OpenAI API
-
-## License
-
-MIT License
-
+- MediaStack API
+- Shadcn UI
+- Lucide Icons
+- Vercel

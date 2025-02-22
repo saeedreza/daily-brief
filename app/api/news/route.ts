@@ -1,181 +1,110 @@
 import { NextResponse } from "next/server"
 
-// Define source mappings based on political views
-const POLITICAL_SOURCES = {
-  left: ["huffpost", "msnbc", "the-washington-post"],
-  "center-left": ["cnn", "nbc-news", "time"],
-  neutral: ["reuters", "associated-press", "bloomberg"],
-  "center-right": ["the-wall-street-journal", "the-hill"],
-  right: ["fox-news", "national-review"],
-}
-
 interface NewsArticle {
   title: string
   description: string
   url: string
-  source: {
-    id: string
-    name: string
-  }
-  topic?: string // Add topic for tracking
+  source: string
+  category?: string
+  language: string
+  image?: string | null
+  published_at: string
+  topic?: string
 }
 
 /**
- * Fetches articles for a specific topic from given sources
+ * Fetches articles from MediaStack API
  */
-async function fetchTopicArticles(
-  topic: string, 
-  sources: string[], 
+async function fetchMediaStackArticles(
+  params: URLSearchParams,
   apiKey: string
 ): Promise<NewsArticle[]> {
-  const articles: NewsArticle[] = []
+  const baseUrl = "http://api.mediastack.com/v1/news"
+  
+  // Add required parameters
+  params.append("access_key", apiKey)
+  params.append("languages", "en")
+  params.append("countries", "us") // Add US news focus
+  params.append("limit", "100")
+  params.append("sort", "published_desc")
 
-  // Fetch from each source individually to ensure balanced coverage
-  for (const source of sources) {
-    const queryParams = new URLSearchParams({
-      sources: source,
-      language: "en",
-      pageSize: "5", // Limit articles per source
-      sortBy: "publishedAt",
-      apiKey,
+  const url = `${baseUrl}?${params.toString()}`
+  console.log("Fetching from URL:", url) // Debug log
+
+  try {
+    const response = await fetch(url)
+    const data = await response.json()
+
+    console.log("MediaStack Response:", {
+      status: response.status,
+      pagination: data.pagination,
+      totalResults: data.data?.length,
     })
 
-    // Add topic-specific search terms
-    const topicQuery = (() => {
-      switch (topic) {
-        case "business":
-          return "(business OR economy OR finance OR market)"
-        case "technology":
-          return "(technology OR tech OR software OR AI OR digital)"
-        case "entertainment":
-          return "(entertainment OR movie OR music OR celebrity)"
-        case "health":
-          return "(health OR medical OR healthcare OR wellness)"
-        case "science":
-          return "(science OR research OR discovery OR space)"
-        case "sports":
-          return "(sports OR athletics OR game OR tournament)"
-        default:
-          return topic
-      }
-    })()
-    
-    queryParams.append("q", topicQuery)
-
-    try {
-      const response = await fetch(
-        `https://newsapi.org/v2/everything?${queryParams.toString()}`
+    if (data.error) {
+      throw new Error(
+        typeof data.error === 'string' 
+          ? data.error 
+          : data.error.message || "MediaStack API Error"
       )
-
-      if (!response.ok) {
-        console.error(`Error fetching from ${source}:`, await response.json())
-        continue // Skip this source if there's an error
-      }
-
-      const data = await response.json()
-      const validArticles = (data.articles || [])
-        .filter((article: any) => article.title && article.description)
-        .map((article: any) => ({
-          ...article,
-          topic // Add topic to each article
-        }))
-
-      articles.push(...validArticles)
-    } catch (error) {
-      console.error(`Error fetching from ${source}:`, error)
-      continue // Skip this source on error
     }
-  }
 
-  return articles
+    return data.data || []
+  } catch (error) {
+    console.error("MediaStack API Error:", error)
+    throw error
+  }
 }
 
 /**
- * GET endpoint to fetch top US news headlines from NewsAPI
- * Requires NEWS_API_KEY environment variable to be configured
- * @returns NextResponse containing either articles or error message
+ * GET endpoint to fetch news from MediaStack API
  */
 export async function GET(request: Request) {
-  // Verify API key first
-  if (!process.env.NEWS_API_KEY) {
-    return NextResponse.json({ error: "NEWS_API_KEY is not configured" }, { status: 500 })
-  }
-
   try {
     const { searchParams } = new URL(request.url)
-    const topics = searchParams.get("topics")?.split(",") || ["general"]
-    const politicalView = searchParams.get("politicalView") || "neutral"
-    const useCustomSources = searchParams.get("useCustomSources") === "true"
-    const customSources = searchParams.get("customSources")?.split(",") || []
+    const topics = searchParams.get('topics')?.split(',') || ['general']
+    
+    console.log('Requested topics:', topics)
+    
+    // Use MediaStack API key from .env
+    const MEDIASTACK_API_KEY = process.env.MEDIASTACK_API_KEY
 
-    // Add error handling for sources
-    const sources = useCustomSources
-      ? customSources
-      : POLITICAL_SOURCES[politicalView as keyof typeof POLITICAL_SOURCES]
-
-    // Add validation for sources
-    if (!sources || sources.length === 0) {
-      return NextResponse.json({ error: "No valid news sources configured" }, { status: 400 })
+    if (!MEDIASTACK_API_KEY) {
+      throw new Error('MediaStack API key is not configured')
     }
 
-    console.log("API Key configured:", !!process.env.NEWS_API_KEY)
-    console.log("Political View:", politicalView)
-    console.log("Sources available:", !!sources)
+    // Initialize params for MediaStack API
+    const params = new URLSearchParams()
+    params.append('categories', topics[0])
+    params.append('limit', '5') // Limit to 5 articles
+    
+    const articles = await fetchMediaStackArticles(params, MEDIASTACK_API_KEY)
 
-    let allArticles: NewsArticle[] = []
+    // Trim article content to reduce token count
+    const trimmedArticles = articles.slice(0, 5).map(article => ({
+      ...article,
+      description: article.description?.slice(0, 200) || '', // Limit description length
+      title: article.title?.slice(0, 100) || '', // Limit title length
+    }))
 
-    // If general is selected, fetch recent news without topic filtering
-    if (topics.includes("general")) {
-      const queryParams = new URLSearchParams({
-        sources: sources.join(","),
-        language: "en",
-        pageSize: "10",
-        sortBy: "publishedAt",
-        apiKey: process.env.NEWS_API_KEY,
-      })
-
-      const response = await fetch(
-        `https://newsapi.org/v2/everything?${queryParams.toString()}`
+    if (trimmedArticles.length === 0) {
+      return NextResponse.json(
+        { error: 'No articles found' },
+        { status: 404 }
       )
-
-      if (!response.ok) {
-        throw new Error("Failed to fetch general news")
-      }
-
-      const data = await response.json()
-      allArticles = data.articles
-        .filter((article: any) => article.title && article.description)
-        .map((article: any) => ({
-          ...article,
-          topic: "general"
-        }))
-    } else {
-      // Fetch articles for each topic
-      for (const topic of topics) {
-        const topicArticles = await fetchTopicArticles(
-          topic,
-          sources,
-          process.env.NEWS_API_KEY
-        )
-        allArticles.push(...topicArticles)
-      }
     }
 
-    // Return 404 if no articles were found
-    if (allArticles.length === 0) {
-      return NextResponse.json({ error: "No articles found" }, { status: 404 })
-    }
+    return NextResponse.json({ articles: trimmedArticles })
 
-    // Return all articles with their topics
-    return NextResponse.json({ articles: allArticles })
-  } catch (error: any) {
-    // Handle any unexpected errors during the API call
-    console.error("News API Error:", error)
+  } catch (error: unknown) {
+    console.error('Detailed API Error:', {
+      message: error instanceof Error ? error.message : 'Unknown error',
+      stack: error instanceof Error ? error.stack : undefined,
+      topics: new URL(request.url).searchParams.get('topics')
+    })
     return NextResponse.json(
-      {
-        error: "Failed to fetch news articles: " + (error.message || "Unknown error"),
-      },
-      { status: 500 },
+      { error: 'Failed to fetch news', details: error instanceof Error ? error.message : 'Unknown error' },
+      { status: 500 }
     )
   }
 }

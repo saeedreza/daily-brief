@@ -11,6 +11,12 @@ interface Article {
   title: string
   description: string
   url: string
+  source: string
+  category?: string
+  language: string
+  image?: string | null
+  published_at: string
+  topic?: string
 }
 
 // Define types for the API responses
@@ -40,13 +46,10 @@ export function NewsBrief() {
    * Handles API error responses by attempting to parse JSON error messages
    * @param response - The Response object from the fetch call
    */
-  const handleApiError = async (response: Response) => {
-    const contentType = response.headers.get("content-type")
-    if (contentType && contentType.includes("application/json")) {
-      const data = await response.json()
-      throw new Error(data.error || `API Error: ${response.status}`)
-    }
-    throw new Error(`API Error: ${response.status}`)
+  const handleApiError = (error: any) => {
+    console.error('API Error:', error);
+    const errorMessage = error instanceof Error ? error.message : 'An unexpected error occurred';
+    setError(errorMessage);
   }
 
   /**
@@ -77,23 +80,17 @@ export function NewsBrief() {
 
       // Step 1: Fetch news articles from the API
       console.log("Fetching news articles...")
-      const params = new URLSearchParams({
-        topics: preferences.topics.join(','),
-        politicalView: preferences.politicalView,
-        useCustomSources: preferences.useCustomSources.toString(),
-        customSources: preferences.customSources.join(','),
-      })
+      const topicsParam = preferences.topics.join(',')
+      const response = await fetch(`/api/news?topics=${topicsParam}`)
 
-      const newsResponse = await fetch(`/api/news?${params}`)
-
-      if (!newsResponse.ok) {
-        await handleApiError(newsResponse)
+      if (!response.ok) {
+        throw new Error(`API responded with status: ${response.status}`)
       }
 
-      const newsData: NewsAPIResponse = await newsResponse.json()
+      const data = await response.json()
       console.log("News API response:", {
-        totalArticles: newsData.articles?.length,
-        articles: newsData.articles?.map(article => ({
+        totalArticles: data.articles?.length,
+        articles: data.articles?.map((article: Article) => ({
           title: article.title,
           description: article.description,
           url: article.url
@@ -101,17 +98,17 @@ export function NewsBrief() {
       })
 
       // Validate news API response
-      if (newsData.error) {
-        throw new Error(newsData.error)
+      if (data.error) {
+        throw new Error(data.error)
       }
 
-      if (!newsData.articles?.length) {
+      if (!data.articles?.length) {
         throw new Error("No news articles found")
       }
 
       // Step 2: Generate summary using the articles and user preferences
       console.log("Generating summary with payload:", {
-        articles: newsData.articles.map(article => ({
+        articles: data.articles.map((article: Article) => ({
           title: article.title,
           description: article.description,
           url: article.url
@@ -125,7 +122,7 @@ export function NewsBrief() {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          articles: newsData.articles,
+          articles: data.articles,
           preferences,
         }),
       })
@@ -150,18 +147,8 @@ export function NewsBrief() {
       }
 
       setSummary(summaryData.summary)
-    } catch (err) {
-      // Handle and display any errors that occur during the process
-      console.error("Generate Brief Error:", err)
-      const errorMessage = err instanceof Error ? err.message : "An unexpected error occurred"
-      setError(errorMessage)
-
-      // Save debug information for troubleshooting
-      setDebug({
-        timestamp: new Date().toISOString(),
-        error: err,
-        errorMessage,
-      })
+    } catch (error) {
+      handleApiError(error)
     } finally {
       setLoading(false)
     }
